@@ -7,10 +7,32 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from flask import Flask
 
-# إعدادات التطبيق
+# إعداد التطبيق
 app = Flask(__name__)
-BOT_TOKEN = os.environ.get('BOT_TOKEN')
+
+# التحقق من المتغيرات البيئية
+def check_environment():
+    """التحقق من وجود جميع المتغيرات المطلوبة"""
+    required_vars = ['BOT_TOKEN', 'PLATFORM']
+    missing_vars = []
+    
+    for var in required_vars:
+        if not os.environ.get(var):
+            missing_vars.append(var)
+    
+    return missing_vars
+
+# التحقق عند الاستيراد
+missing_vars = check_environment()
+if missing_vars:
+    print(f"❌ متغيرات البيئة المفقودة: {', '.join(missing_vars)}")
+    print("💡 يرجى تعيينها في Render Dashboard → Environment")
+    # لا توقف البرنامج تماماً، دعه يحاول الاستمرار
+
+# إعدادات التطبيق
+BOT_TOKEN = os.environ.get('BOT_TOKEN', 'default_token_placeholder')
 PLATFORM = os.environ.get('PLATFORM', 'web').lower()
+PORT = int(os.environ.get('PORT', 5000))
 
 # إعداد التسجيل
 logging.basicConfig(
@@ -38,6 +60,10 @@ class LOKAutoBot:
     async def start_auto_tasks(self):
         """بدء المهام التلقائية"""
         try:
+            if BOT_TOKEN == 'default_token_placeholder':
+                logger.error("❌ BOT_TOKEN غير صحيح")
+                return False
+            
             # جدولة المهام
             self.scheduler.add_job(
                 self.collect_resources,
@@ -65,12 +91,6 @@ class LOKAutoBot:
         except Exception as e:
             logger.error(f"❌ فشل بدء المهام: {e}")
             return False
-    
-    async def stop_auto_tasks(self):
-        """إيقاف المهام التلقائية"""
-        self.scheduler.shutdown()
-        self.bot_status['running'] = False
-        logger.info("⏹️ إيقاف المهام التلقائية")
     
     async def collect_resources(self):
         """جمع الموارد تلقائياً"""
@@ -121,33 +141,42 @@ bot = LOKAutoBot()
 # صفحة ويب أساسية
 @app.route('/')
 def home():
-    return f"🏰 بوت League of Kingdoms يعمل على منصة: {PLATFORM.upper()}"
+    return f"🏰 بوت League of Kingdoms - BOT_TOKEN: {'✅ موجود' if BOT_TOKEN != 'default_token_placeholder' else '❌ مفقود'}"
+
+@app.route('/health')
+def health_check():
+    return {"status": "healthy", "bot_token_set": BOT_TOKEN != 'default_token_placeholder'}
 
 # أوامر Telegram
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if BOT_TOKEN == 'default_token_placeholder':
+        await update.message.reply_text("❌ البوت غير مضبوط بشكل صحيح. يرجى التحقق من BOT_TOKEN.")
+        return
+    
     keyboard = [
         ['🚀 بدء التلقائي', '⏹️ إيقاف التلقائي'],
-        ['📊 الحالة', '🔄 جمع الآن'],
-        ['⚔️ هجوم الآن', '👥 تدريب الآن']
+        ['📊 الحالة']
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     
-    welcome_text = """
+    welcome_text = f"""
 🤖 *بوت League of Kingdoms التلقائي*
 
-🎯 يعمل تلقائياً على منصة: *{}*
+🎯 حالة البوت: {'🟢 يعمل' if bot.bot_status['running'] else '🔴 متوقف'}
 
-🚀 الميزات التلقائية:
-✅ جمع الموارد كل 30 دقيقة
-✅ مهاجمة الوحوش كل 45 دقيقة  
-✅ تدريب القوات كل ساعة
-
-📊 Use /status لعرض الحالة
-    """.format(PLATFORM.upper())
+💡 الأوامر المتاحة:
+🚀 بدء التلقائي - بدء المهام التلقائية
+⏹️ إيقاف التلقائي - إيقاف المهام
+📊 الحالة - عرض حالة البوت
+    """
     
     await update.message.reply_text(welcome_text, parse_mode='Markdown', reply_markup=reply_markup)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if BOT_TOKEN == 'default_token_placeholder':
+        await update.message.reply_text("❌ البوت غير مضبوط. يرجى إعداد BOT_TOKEN أولاً.")
+        return
+    
     text = update.message.text
     
     if text == '🚀 بدء التلقائي':
@@ -162,30 +191,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == '📊 الحالة':
         status = await bot.get_status()
         await update.message.reply_text(status, parse_mode='Markdown')
-    
-    elif text == '🔄 جمع الآن':
-        await bot.collect_resources()
-        await update.message.reply_text("✅ جاري جمع الموارد...")
-    
-    elif text == '⚔️ هجوم الآن':
-        await bot.attack_monsters()
-        await update.message.reply_text("✅ جاري الهجوم على الوحوش...")
-    
-    elif text == '👥 تدريب الآن':
-        await bot.train_troops()
-        await update.message.reply_text("✅ جاري تدريب القوات...")
-
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """أمر /status"""
-    status = await bot.get_status()
-    await update.message.reply_text(status, parse_mode='Markdown')
 
 async def main():
     """الدالة الرئيسية للتشغيل"""
     try:
         # التحقق من التوكن
-        if not BOT_TOKEN:
-            logger.error("❌ BOT_TOKEN غير موجود")
+        if BOT_TOKEN == 'default_token_placeholder':
+            logger.error("❌ BOT_TOKEN غير مضبوط. يرجى إضافته في Render Dashboard → Environment")
+            logger.info("💡 انتظر حتى يتم إضافة BOT_TOKEN، ثم أعد التشغيل")
             return
         
         # إنشاء تطبيق Telegram
@@ -193,7 +206,6 @@ async def main():
         
         # إضافة handlers
         application.add_handler(CommandHandler("start", start))
-        application.add_handler(CommandHandler("status", status_command))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         
         # بدء البوت تلقائياً
@@ -210,8 +222,7 @@ async def main():
 
 def run_flask():
     """تشغيل خادم Flask"""
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
 
 if __name__ == "__main__":
     # تشغيل Flask في الخلفية
